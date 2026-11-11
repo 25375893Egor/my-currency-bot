@@ -1,106 +1,133 @@
 import telebot
 from telebot import types
 import requests
-import re
 
-TOKEN = "9041389245:AAG6NETPQuO-e-9prXf3m5voJN9qXNHsGXg"
+TOKEN = '9041389245:AAG6NETPQuO-e-9prXf3m5voJN9qXNHsGXg'
 bot = telebot.TeleBot(TOKEN)
 
-# Функция получения курсов
+# Функция получения курсов (добавили EUR)
 def get_rates():
     try:
         url = "https://open.er-api.com/v6/latest/RUB"
         response = requests.get(url, timeout=5)
         data = response.json()
-        return data['rates']['USD'], data['rates']['CNY']
+        return data['rates']['USD'], data['rates']['CNY'], data['rates']['EUR']
     except Exception as e:
         print(f"Ошибка при получении курса: {e}")
-        return None, None
+        return None, None, None
 
-# Меню с кнопками
+# Список всех наших кнопок для проверки
+BUTTONS = ['🇺🇸 USD', '🇨🇳 CNY', '🇪🇺 EUR', '🇷🇺 RUB']
+
+# Команда /start - создает постоянное меню внизу
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    btn_usd = types.InlineKeyboardButton("🇺🇸 USD", callback_data='conv_USD')
-    btn_cny = types.InlineKeyboardButton("🇨🇳 CNY", callback_data='conv_CNY')
-    btn_rub = types.InlineKeyboardButton("🇷🇺 RUB", callback_data='conv_RUB')
-    markup.add(btn_usd, btn_cny, btn_rub)
+    # ReplyKeyboardMarkup создает кнопки, которые НЕ исчезают
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     
-    bot.send_message(message.chat.id, "Привет! Выбери валюту, которую хочешь перевести (бот покажет результат сразу во всех трех):", reply_markup=markup)
+    # Создаем кнопки
+    btn_usd = types.KeyboardButton('🇺🇸 USD')
+    btn_cny = types.KeyboardButton('🇨🇳 CNY')
+    btn_eur = types.KeyboardButton('🇪🇺 EUR')
+    btn_rub = types.KeyboardButton('🇷🇺 RUB')
+    
+    # Добавляем их в меню
+    markup.add(btn_usd, btn_cny, btn_eur, btn_rub)
+    
+    bot.send_message(message.chat.id, "Привет! Выбери валюту, которую хочешь перевести (или просто напиши текст, например '100 usd'):", reply_markup=markup)
 
-# Ловим нажатия на кнопки
-@bot.callback_query_handler(func=lambda call: True)
-def callback_inline(call):
-    if call.data.startswith('conv_'):
-        # Вытаскиваем название валюты из данных кнопки (USD, CNY или RUB)
-        base_currency = call.data.split('_')[1]
-        msg = bot.send_message(call.message.chat.id, f"Введи сумму в {base_currency} (только цифры):")
-        # Передаем валюту в следующую функцию
-        bot.register_next_step_handler(msg, process_conversion, base_currency)
+# Ловим нажатия на постоянные кнопки
+@bot.message_handler(func=lambda message: message.text in BUTTONS)
+def ask_amount(message):
+    # Определяем, какую валюту выбрал пользователь
+    base_currency = message.text.split()[-1] # Берет последнее слово (USD, CNY, EUR или RUB)
+    
+    msg = bot.send_message(message.chat.id, f"Введи сумму в {base_currency} (только цифры):")
+    # Передаем валюту в следующую функцию
+    bot.register_next_step_handler(msg, process_conversion, base_currency)
 
-# ЕДИНАЯ ФУНКЦИЯ для расчета всех трех валют
+# Функция расчета
 def process_conversion(message, base_currency):
+    # Если пользователь передумал и написал /start
+    if message.text == '/start':
+        start_message(message)
+        return
+
+    # Защита: если пользователь нажал на кнопку вместо ввода цифры
+    if message.text in BUTTONS:
+        ask_amount(message)
+        return
+
     try:
-        # Пытаемся превратить текст в число (если ввели запятую, меняем на точку)
         amount = float(message.text.replace(',', '.'))
+        usd_rate, cny_rate, eur_rate = get_rates()
         
-        usd_rate, cny_rate = get_rates()
         if usd_rate is None:
             bot.send_message(message.chat.id, "Ошибка сети. Не удалось получить курс.")
             return
 
-        # Сначала переводим всё в РУБЛИ (базовая валюта)
+        # Переводим в рубли
         if base_currency == 'USD':
             rub_amount = amount / usd_rate
         elif base_currency == 'CNY':
             rub_amount = amount / cny_rate
+        elif base_currency == 'EUR':
+            rub_amount = amount / eur_rate
         else:
             rub_amount = amount
 
-        # Теперь из рублей считаем остальные две
+        # Считаем остальные валюты
         final_usd = round(rub_amount * usd_rate, 2)
         final_cny = round(rub_amount * cny_rate, 2)
+        final_eur = round(rub_amount * eur_rate, 2)
         final_rub = round(rub_amount, 2)
 
-        # Формируем красивый ответ
         response = (
             f"💵 Твоя сумма: {amount} {base_currency}\n\n"
             f"🇷🇺 Рубли: {final_rub} RUB\n"
             f"🇺🇸 Доллары: {final_usd} USD\n"
-            f"🇨🇳 Юани: {final_cny} CNY"
+            f"🇨🇳 Юани: {final_cny} CNY\n"
+            f"🇪🇺 Евро: {final_eur} EUR"
         )
         bot.send_message(message.chat.id, response)
         
     except ValueError:
         bot.send_message(message.chat.id, "Ошибка! Нужно ввести просто число, без букв (например, 100 или 50.5).")
 
-# Старый добрый текстовый обработчик (если писать вручную)
+# Если пользователь просто пишет текст (например "100 usd"), работает старый умный поиск
 @bot.message_handler(content_types=['text'])
-def echo_message(message):
+def text_message(message):
+    if message.text.startswith('/'):
+        return
+        
     text = message.text.lower()
-    match = re.search(r'(\d+(?:\.\d+)?)\s*(usd|доллар|cny|юань|rub|руб)', text)
+    import re
+    match = re.search(r'(\d+(?:\.\d+)?)\s*(usd|доллар|cny|юань|rub|руб|eur|евро)', text)
     
     if match:
         amount = float(match.group(1))
         currency = match.group(2)
-        usd_rate, cny_rate = get_rates()
+        usd_rate, cny_rate, eur_rate = get_rates()
         
-        # Тут логика точно такая же, как в кнопках
         if currency in ['rub', 'руб']:
             rub = amount
         elif currency in ['usd', 'доллар']:
             rub = amount / usd_rate
-        else:
+        elif currency in ['cny', 'юань']:
             rub = amount / cny_rate
+        elif currency in ['eur', 'евро']:
+            rub = amount / eur_rate
             
         bot.send_message(message.chat.id, 
             f"💵 Сумма: {amount} {currency.upper()}\n\n"
             f"🇷🇺 Рубли: {round(rub, 2)} RUB\n"
             f"🇺🇸 Доллары: {round(rub * usd_rate, 2)} USD\n"
-            f"🇨🇳 Юани: {round(rub * cny_rate, 2)} CNY"
+            f"🇨🇳 Юани: {round(rub * cny_rate, 2)} CNY\n"
+            f"🇪🇺 Евро: {round(rub * eur_rate, 2)} EUR"
         )
     else:
-        bot.send_message(message.chat.id, f"Ты написал: {message.text}")
+        bot.send_message(message.chat.id, f"Я тебя не понял. Нажми на кнопку внизу или напиши, например: 100 usd")
 
-print("Бот с тройной конвертацией запущен...")
+print("Бот с постоянными кнопками запущен...")
 bot.infinity_polling()
+
